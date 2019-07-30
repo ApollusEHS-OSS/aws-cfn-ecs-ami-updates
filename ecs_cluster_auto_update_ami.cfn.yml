@@ -1,11 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: AWS ECS Cluster
+Description: AWS ECS Cluster with Lambda to automatically update ECS-optimized AMI
 Outputs:
   ClusterName:
     Description: Name of ECS Cluster
     Value: !Ref Name
     Export:
-      Name: !Join ['', [!Ref Owner, !Ref Environment, ECSFARGATE]]
+      Name: !Join ['', [!Ref Owner, !Ref Environment, ECS]]
 
 Parameters:
   Name:

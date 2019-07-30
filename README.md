@@ -1,6 +1,6 @@
 # aws-cfn-ecs-ami-updates
 
-This AWS CloudFormation template helps you deploy an inline Lambda function can be used to automatically update ECS Cluster EC2 Instances to the latest AMI as soon as they become available.
+This [AWS CloudFormation template](./ecs_cluster_auto_update_ami.cfn.yml) helps you deploy an inline Lambda function can be used to automatically update ECS Cluster EC2 Instances to the latest AMI as soon as they become available.
 
 ## High level Solution
 
