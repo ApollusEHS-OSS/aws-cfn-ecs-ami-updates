@@ -18,7 +18,7 @@ exports.handler = async (event) => {
     existingParams.forEach(function(stackParam) {
         let newParam = {
             ParameterKey: stackParam.ParameterKey,
-            UsePreviousValue: true;
+            UsePreviousValue: true
         }
         updateParams.push(newParam);
     });

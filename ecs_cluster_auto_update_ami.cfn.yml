@@ -233,6 +233,12 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+          - Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Effect: Allow
+            Resource: "*"
           - Effect: Allow
             Action:
               - 'sns:Publish'
@@ -247,9 +253,8 @@ Resources:
             Resource: '*'
           - Effect: Allow
             Action:
-              - 'ssm:GetParameter'
               - 'ssm:GetParameters'
-            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/aws/*"
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:*:parameter/aws/*"
 
   #Node.js (must be 8.10 for CFN) that will execute an update stack of this stack when triggered
   StackUpdateLambda:
@@ -278,7 +283,7 @@ Resources:
               existingParams.forEach(function(stackParam) {
                   let newParam = {
                       ParameterKey: stackParam.ParameterKey,
-                      UsePreviousValue: true;
+                      UsePreviousValue: true
                   }
                   updateParams.push(newParam);
               });

@@ -104,3 +104,17 @@ This inline node.js function is configured to only be able to update the Stack i
 When triggered by the SNS Topic, it will describe the stack, retrieve the previous parameter names, and execute an updateStack using existing values.
 
 The full Lambda code is also available here if needed: [stackupdate.js](./lambda/stackupdate.js)
+
+#### IAM Policy for CloudFormation + SSM Parameter
+
+Note that the Lambda function needs to be given 'ssm:GetParameters' to execute the updateStack.
+We have limited the resources to only those public 'aws' parameters:
+
+```
+
+- Effect: Allow
+  Action:
+    - 'ssm:GetParameters'
+  Resource: !Sub "arn:aws:ssm:${AWS::Region}:*:parameter/aws/*"
+  
+```
