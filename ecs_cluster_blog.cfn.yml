@@ -1,0 +1,370 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: AWS ECS Cluster
+Outputs:
+  ClusterName:
+    Description: Name of ECS Cluster
+    Value: !Ref Name
+    Export:
+      Name: !Join ['', [!Ref Owner, !Ref Environment, ECSFARGATE]]
+
+Parameters:
+  Name:
+    Description: Name of this ECS Cluster
+    Type: String
+    AllowedPattern: '^[a-zA-Z0-9\-]{1,255}$'
+  Owner:
+    Description: Product Owner
+    Type: String
+  Environment:
+    Description: Environment being deployed to
+    Type: String
+  NotificationEmail:
+    Description: Sns Topic Email
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID
+  ClusterSubnets:
+    Type: "List<AWS::EC2::Subnet::Id>"
+    Description: Subnet Ids for the Cluster
+  Cidr:
+    Description: Full CIDR for this vpc
+    Type: String
+    AllowedPattern: '((\d{1,3})\.){3}\d{1,3}/\d{1,2}'
+  OnDemandInstanceType:
+    Type: String
+    Default: t3.large
+  OnDemandMaxClusterSize:
+    Type: Number
+    Default: 3
+  ECSAMI:
+    Type : 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+    Default: '/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id'
+    Description: SSM Parameter key for the latest AMI.
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Network Information
+        Parameters:
+          - VpcId
+          - ClusterSubnets
+          - Cidr
+      - Label:
+          default: ECS Cluster Information
+        Parameters:
+          - Name
+          - OnDemandMaxClusterSize
+          - OnDemandInstanceType
+          - ECSAMI
+      - Label:
+          default: Product and Notification Information
+        Parameters:
+          - Owner
+          - Environment
+          - NotificationEmail
+
+
+######################################
+#           Mappings                 #
+######################################
+
+Mappings:
+  #https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ECS-AMI-SubscribeTopic.html
+  #TODO complete this table if required
+  AWSRegionToECSAMIUpdateSnsTopic:
+    us-east-1:
+      SNSTopicArn: arn:aws:sns:us-east-1:177427601217:ecs-optimized-amazon-ami-update
+    ap-southeast-2:
+      SNSTopicArn: arn:aws:sns:ap-southeast-2:177427601217:ecs-optimized-amazon-ami-update
+
+######################################
+#           Resources                #
+######################################
+
+Resources:
+
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref Name
+
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Path: /
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action: sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ECSInstanceRole
+
+  #Security group for ECS Instances. Allows everything in from VPC.
+  #TODO update to match your security requirements
+  ECSInstanceSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: !Sub ${Name}-hosts
+      SecurityGroupIngress:
+        - CidrIp: !Ref Cidr
+          IpProtocol: -1
+      VpcId: !Ref VpcId
+
+  #Autoscaling group for ECS Cluster
+  OnDemandAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: !Ref ClusterSubnets
+      LaunchConfigurationName: !Ref OnDemandLaunchConfiguration
+      MinSize: 1
+      MaxSize: !Ref OnDemandMaxClusterSize
+      DesiredCapacity: 1
+      NotificationConfigurations:
+      - TopicARN: !Ref NotificationSnsTopic
+        NotificationTypes:
+        - autoscaling:EC2_INSTANCE_LAUNCH
+        - autoscaling:EC2_INSTANCE_LAUNCH_ERROR
+        - autoscaling:EC2_INSTANCE_TERMINATE
+        - autoscaling:EC2_INSTANCE_TERMINATE_ERROR
+      Tags:
+        - Key: Name
+          Value: !Sub ${Name} - ECS On Demand Host
+          PropagateAtLaunch: true
+    CreationPolicy:
+      AutoScalingCreationPolicy:
+        MinSuccessfulInstancesPercent: 100
+      ResourceSignal:
+        Timeout: PT5M
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 1
+        MaxBatchSize: 1
+        PauseTime: PT5M
+        MinSuccessfulInstancesPercent: 100
+        SuspendProcesses:
+          - HealthCheck
+          - ReplaceUnhealthy
+          - AlarmNotification
+          - AZRebalance
+          - ScheduledActions
+        WaitOnResourceSignals: true
+
+  #Launch Configuration to use the ECS AMI as defined in the SSM Key
+  OnDemandLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Metadata:
+      AWS::CloudFormation::Init:
+        config:
+          commands:
+            01_add_instance_to_cluster:
+                command: !Sub echo ECS_CLUSTER=${Cluster} > /etc/ecs/ecs.config
+          files:
+            "/etc/cfn/cfn-hup.conf":
+              mode: 000400
+              owner: root
+              group: root
+              content: !Sub |
+                [main]
+                stack=${AWS::StackId}
+                region=${AWS::Region}
+            "/etc/cfn/hooks.d/cfn-auto-reloader.conf":
+              content: !Sub |
+                [cfn-auto-reloader-hook]
+                triggers=post.update
+                path=Resources.ContainerInstances.Metadata.AWS::CloudFormation::Init
+                action=/opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource OnDemandLaunchConfiguration
+          services:
+            sysvinit:
+              cfn-hup:
+                enabled: true
+                ensureRunning: true
+                files:
+                  - /etc/cfn/cfn-hup.conf
+                  - /etc/cfn/hooks.d/cfn-auto-reloader.conf
+    Properties:
+      ImageId: !Ref ECSAMI
+      InstanceType: !Ref OnDemandInstanceType
+      IamInstanceProfile: !Ref ECSInstanceProfile
+      SecurityGroups:
+        - !Ref ECSInstanceSecurityGroup
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+          yum install -y amazon-ssm-agent
+          yum install -y aws-cfn-bootstrap
+          /opt/aws/bin/cfn-init -v --region ${AWS::Region} --stack ${AWS::StackName} --resource OnDemandLaunchConfiguration
+          /opt/aws/bin/cfn-signal -e $? --region ${AWS::Region} --stack ${AWS::StackName} --resource OnDemandAutoScalingGroup
+
+  ## Lambda to update Stack when new ECS AMI is available
+  StackUpdateLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub ${Name}-lambda-stack-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+
+  #Required IAM Policy to allow the Lambda to update only this Stack and Publish to SNS Topic when done
+  StackUpdateLambdaPolicy:
+    Type: 'AWS::IAM::Policy'
+    Properties:
+      PolicyName: !Sub ${Name}-lambda-stack-policy
+      Roles:
+        - !Ref StackUpdateLambdaRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'sns:Publish'
+            Resource: !Ref NotificationSnsTopic
+          - Effect: Allow
+            Action:
+              - 'cloudformation:UpdateStack'
+            Resource: !Ref AWS::StackId
+          - Effect: Allow
+            Action:
+              - 'cloudformation:DescribeStacks'
+            Resource: '*'
+          - Effect: Allow
+            Action:
+              - 'ssm:GetParameter'
+              - 'ssm:GetParameters'
+            Resource: !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/aws/*"
+
+  #Node.js (must be 8.10 for CFN) that will execute an update stack of this stack when triggered
+  StackUpdateLambda:
+    Type: 'AWS::Lambda::Function'
+    DependsOn: StackUpdateLambdaRole
+    Properties:
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+
+          const cloudformation = new AWS.CloudFormation();
+
+          let params = {
+            StackName: process.env.STACK_NAME,
+            Capabilities: [ 'CAPABILITY_NAMED_IAM'  ],
+            UsePreviousTemplate: true
+          };
+
+          exports.handler = async (event) => {
+              var describeParams = {
+                StackName:  process.env.STACK_NAME
+              };
+              let updateParams = [];
+              let describeStacksResult = await cloudformation.describeStacks(describeParams).promise();
+              let existingParams = describeStacksResult.Stacks[0].Parameters;
+              existingParams.forEach(function(stackParam) {
+                  let newParam = {
+                      ParameterKey: stackParam.ParameterKey,
+                      UsePreviousValue: true;
+                  }
+                  updateParams.push(newParam);
+              });
+              params.Parameters = updateParams;
+              let Message = 'Stack Update Complete: ';
+              try {
+                  let stackUpdateResult = await cloudformation.updateStack(params).promise();
+                  Message = Message + ' Success';
+              } catch (err) {
+                  if (err.code === 'ValidationError' &&  err.message === 'No updates are to be performed.') {
+                      Message = Message + ' No updates required';
+                  } else {
+                   console.error(err);
+                   Message = Message + err.message;
+                  }
+              }
+
+              // Create publish parameters
+              let snsParams = {
+                Message: Message,
+                TopicArn: process.env.TOPIC_ARN
+              };
+              try {
+                  let publishTextResult = await new AWS.SNS({apiVersion: '2010-03-31'}).publish(snsParams).promise();
+              } catch (snsErr) {
+                  console.log(snsErr);
+              }
+              return Message;
+          };
+      Environment:
+        Variables:
+          STACK_NAME: !Ref AWS::StackName
+          TOPIC_ARN: !Ref NotificationSnsTopic
+      Handler: index.handler
+      Runtime: nodejs8.10
+      Timeout: '300'
+      Role: !GetAtt
+        - StackUpdateLambdaRole
+        - Arn
+
+  #Allow SNS to Invoke the Lambda function only if from the ECS SNS Topic
+  ECSAMIUpdatesLambdaSNSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref StackUpdateLambda
+      Principal: 'sns.amazonaws.com'
+      SourceArn: !FindInMap [ AWSRegionToECSAMIUpdateSnsTopic, !Ref "AWS::Region", SNSTopicArn ]
+
+  #Subscribe the Lambda function to the ECS AMI Update Topic
+  ECSAMIUpdatesLambda:
+    Type: AWS::SNS::Subscription
+    DependsOn: ECSAMIUpdatesLambdaSNSPermission
+    Properties:
+      Endpoint:
+        !GetAtt
+          - StackUpdateLambda
+          - Arn
+      Protocol: lambda
+      TopicArn: !FindInMap [ AWSRegionToECSAMIUpdateSnsTopic, !Ref "AWS::Region", SNSTopicArn ]
+
+  #Create a Topic to notify the provided Email address when new AMIs are available for ECS
+  NotificationSnsTopic:
+    Type: "AWS::SNS::Topic"
+    Properties:
+      DisplayName:
+        Fn::Join:
+          - "_"
+          - - !Ref Owner
+            - !Ref Environment
+            - ECS_Cluster
+      Subscription:
+        -
+          Endpoint: !Ref NotificationEmail
+          Protocol: email
+      TopicName:
+        Fn::Join:
+          - "-"
+          - - !Ref Owner
+            - !Ref Environment
+            - ECS-Cluster
+
+  #Also subscribe the Nofitication Email to receive these events
+  ECSAMIUpdates:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: !Ref NotificationEmail
+      Protocol: email
+      TopicArn: !FindInMap [ AWSRegionToECSAMIUpdateSnsTopic, !Ref "AWS::Region", SNSTopicArn ]
