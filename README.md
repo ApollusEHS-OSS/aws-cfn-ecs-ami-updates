@@ -27,7 +27,11 @@ Please validate the IAM Policies and SecurityGroups included in this template be
 ## ECS EC2 Instances
 
 If you're using EC2 instances for your ECS cluster, then keeping these instances updated and secure must be a high priority.
-Other services such as AWS ElasticBeanstalk provide Managed Updates that perform this function for you.  However at this time this isn't available for ECS EC2.  ECS Fargate negates this need and is a great solution for deploying containers without having to manage EC2 instances.
+Other services such as AWS ElasticBeanstalk provide Managed Updates that perform this function for you.  However at this time this isn't available for ECS EC2.  
+
+#### ECS Fargate
+
+ECS Fargate negates the need for this solution and is a great option for deploying containers without having to manage EC2 instances.
 
 ## EC2 AutoScaling group
 
